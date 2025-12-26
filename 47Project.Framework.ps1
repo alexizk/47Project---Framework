@@ -501,6 +501,191 @@ function Show-47GuiMessage {
   [System.Windows.MessageBox]::Show($Text,$Title) | Out-Null
 }
 
+
+  function Show-47CommandPalette {
+  try {
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Command Palette (Ctrl+K)'
+    $dlg.Width = 580
+    $dlg.Height = 480
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $win
+    $dlg.Background = $bg
+
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $sp.Margin = '12'
+
+    $q = New-Object System.Windows.Controls.TextBox
+    $q.Background = $panel
+    $q.Foreground = $fg
+    $q.BorderBrush = $accent
+    $q.BorderThickness = '1'
+    $q.Margin = '0,0,0,10'
+    $q.Text = ''
+
+    $hint = New-Object System.Windows.Controls.TextBlock
+    $hint.Text = 'Type to search (fuzzy). Double-click to run. Pinned/Recent shown when empty.'
+    $hint.Foreground = $muted
+    $hint.Margin = '0,0,0,8'
+
+    $list = New-Object System.Windows.Controls.ListBox
+    $list.Height = 350
+    $list.Background = $panel
+    $list.Foreground = $fg
+    $list.BorderBrush = $accent
+    $list.BorderThickness = '1'
+
+    $btns = New-Object System.Windows.Controls.WrapPanel
+    $btns.Margin = '0,10,0,0'
+
+    $btnPin = New-Object System.Windows.Controls.Button
+    $btnPin.Content = 'Pin Selected'
+    $btnPin.Padding = '10,6,10,6'
+    $btnPin.Background = $panel
+    $btnPin.Foreground = $fg
+    $btnPin.BorderBrush = $accent
+    $btnPin.BorderThickness = '1'
+    $btnPin.Margin = '0,0,10,0'
+
+    $btnUnpin = New-Object System.Windows.Controls.Button
+    $btnUnpin.Content = 'Unpin Selected'
+    $btnUnpin.Padding = '10,6,10,6'
+    $btnUnpin.Background = $panel
+    $btnUnpin.Foreground = $fg
+    $btnUnpin.BorderBrush = $accent
+    $btnUnpin.BorderThickness = '1'
+
+    $btns.Children.Add($btnPin) | Out-Null
+    $btns.Children.Add($btnUnpin) | Out-Null
+
+    $sp.Children.Add($q) | Out-Null
+    $sp.Children.Add($hint) | Out-Null
+    $sp.Children.Add($list) | Out-Null
+    $sp.Children.Add($btns) | Out-Null
+    $dlg.Content = $sp
+
+    $all = @()
+    foreach ($k in ($pages.Keys | Sort-Object)) {
+      $all += [pscustomobject]@{ Kind='Page'; Title=$k; Ref=$k }
+    }
+    foreach ($a in @(Get-47AppCatalog)) {
+      $all += [pscustomobject]@{ Kind='App'; Title=$a.DisplayName; Ref=$a }
+    }
+
+    function GetPinnedItems {
+      $pinned = @(Get-47PinnedCommands)
+      $out = @()
+      foreach ($p in $pinned) {
+        $pi = $all | Where-Object { $_.Kind -eq 'Page' -and $_.Title -eq $p } | Select-Object -First 1
+        if ($pi) { $out += @($pi) }
+      }
+      return $out
+    }
+
+    function Render {
+      $list.Items.Clear()
+      $s = $q.Text
+      $recent = @(Get-47Recent)
+
+      if ([string]::IsNullOrWhiteSpace($s)) {
+        foreach ($p in (GetPinnedItems)) { [void]$list.Items.Add(("Pinned: " + $p.Title)) }
+        foreach ($r in $recent) { [void]$list.Items.Add(("Recent: " + $r)) }
+        foreach ($p2 in ($all | Where-Object { $_.Kind -eq 'Page' } | Sort-Object Title | Select-Object -First 30)) {
+          [void]$list.Items.Add(("Page: " + $p2.Title))
+        }
+        foreach ($a2 in ($all | Where-Object { $_.Kind -eq 'App' } | Sort-Object Title | Select-Object -First 30)) {
+          [void]$list.Items.Add(("App: " + $a2.Title))
+        }
+        return
+      }
+
+      $scored = foreach ($it in $all) {
+        $t = ($it.Kind + ' ' + $it.Title)
+        $score = Get-47FuzzyScore -Text $t -Query $s
+        if ($score -gt -9999) { [pscustomobject]@{ Item=$it; Score=$score } }
+      }
+
+      foreach ($x in ($scored | Sort-Object Score -Descending | Select-Object -First 90)) {
+        [void]$list.Items.Add(("{0}: {1}" -f $x.Item.Kind, $x.Item.Title))
+      }
+    }
+
+    function ResolveItem([string]$sel) {
+      if (-not $sel) { return $null }
+      if ($sel.StartsWith('Pinned: ')) {
+        $t = $sel.Substring(8)
+        return ($all | Where-Object { $_.Kind -eq 'Page' -and $_.Title -eq $t } | Select-Object -First 1)
+      }
+      if ($sel.StartsWith('Recent: ')) {
+        $t = $sel.Substring(8)
+        $page = $all | Where-Object { $_.Kind -eq 'Page' -and $_.Title -eq $t } | Select-Object -First 1
+        if ($page) { return $page }
+        $app = $all | Where-Object { $_.Kind -eq 'App' -and $_.Title -eq $t } | Select-Object -First 1
+        if ($app) { return $app }
+        return $null
+      }
+      $kind = $sel.Split(':')[0].Trim()
+      $title = ($sel.Substring($sel.IndexOf(':')+1)).Trim()
+      return ($all | Where-Object { $_.Kind -eq $kind -and $_.Title -eq $title } | Select-Object -First 1)
+    }
+
+    function GoItem($it) {
+      if (-not $it) { return }
+      Add-47Recent -Entry $it.Title
+
+      if ($it.Kind -eq 'Page') {
+        $nav.SelectedItem = $it.Ref
+        $dlg.Close()
+        return
+      }
+      if ($it.Kind -eq 'App') {
+        $nav.SelectedItem = 'Apps'
+        try { Set-SelectedApp $it.Ref } catch { }
+        $dlg.Close()
+        return
+      }
+    }
+
+    $q.Add_TextChanged({ Render })
+    $dlg.Add_ContentRendered({ $q.Focus() | Out-Null; Render })
+
+    $list.Add_MouseDoubleClick({
+      try {
+        $sel = [string]$list.SelectedItem
+        $it = ResolveItem -sel $sel
+        GoItem $it
+      } catch { }
+    })
+
+    $btnPin.Add_Click({
+      try {
+        $sel = [string]$list.SelectedItem
+        $it = ResolveItem -sel $sel
+        if (-not $it) { return }
+        if ($it.Kind -ne 'Page') { Show-47GuiMessage 'Only pages can be pinned.'; return }
+        $p = @(Get-47PinnedCommands)
+        if (-not ($p -contains $it.Title)) { $p = @($it.Title) + $p }
+        $p = $p | Select-Object -Unique
+        Save-47PinnedCommands -Pinned $p
+        Render
+      } catch { }
+    })
+
+    $btnUnpin.Add_Click({
+      try {
+        $sel = [string]$list.SelectedItem
+        if (-not $sel.StartsWith('Pinned: ')) { return }
+        $title = $sel.Substring(8)
+        $p = @(Get-47PinnedCommands) | Where-Object { $_ -ne $title }
+        Save-47PinnedCommands -Pinned $p
+        Render
+      } catch { }
+    })
+
+    $dlg.ShowDialog() | Out-Null
+  } catch { }
+}
+
 function Get-47OpenFile {
   param([string]$Title='Select file',[string]$Filter='All files (*.*)|*.*')
   $dlg = New-Object Microsoft.Win32.OpenFileDialog
@@ -613,6 +798,7 @@ function Find-47IconForApp {
 
 
 
+
 function Get-47AppCatalog {
   # Discover scripts and modules in the pack and enrich with metadata.
   $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -637,18 +823,21 @@ function Get-47AppCatalog {
   foreach ($it in $scriptItems) {
     $m = Get-47AppMetadata -Path $it.FullName
     $apps += [pscustomobject]@{
-      Type        = 'script'
-      Id          = $it.FullName
-      Name        = $m.Name
-      DisplayName = $m.Name
-      Description = $m.Description
-      Version     = $m.Version
-      Kind        = $m.Kind
-      Path        = $it.FullName
-      Category    = (Get-47AppCategory -Path $it.FullName)
-      ModuleId    = $null
-      ModuleDir   = $null
-      EntryPath   = $it.FullName
+      Type              = 'script'
+      Id                = $it.FullName
+      Name              = $m.Name
+      DisplayName       = $m.Name
+      Description       = $m.Description
+      Version           = $m.Version
+      Kind              = $m.Kind
+      Path              = $it.FullName
+      Category          = (Get-47AppCategory -Path $it.FullName)
+      ModuleId          = $null
+      ModuleDir         = $null
+      EntryPath         = $it.FullName
+      SupportedPlatforms= $null
+      MinPowerShellVersion = $null
+      RequiresAdmin     = $false
     }
   }
 
@@ -667,25 +856,34 @@ function Get-47AppCatalog {
         }
       } catch { }
 
+      $sp = $null
+      try { $sp = $j.supportedPlatforms } catch { }
+      $minPs = $null
+      try { $minPs = $j.minPowerShellVersion } catch { }
+
       $apps += [pscustomobject]@{
-        Type        = 'module'
-        Id          = $j.moduleId
-        Name        = $d.Name
-        DisplayName = ([string]$j.displayName)
-        Description = ([string]$j.description)
-        Version     = ([string]$j.version)
-        Kind        = 'Module'
-        Path        = $d.FullName
-        Category    = 'Modules'
-        ModuleId    = ([string]$j.moduleId)
-        ModuleDir   = $d.FullName
-        EntryPath   = $entry
+        Type              = 'module'
+        Id                = [string]$j.moduleId
+        Name              = $d.Name
+        DisplayName       = ([string]$j.displayName)
+        Description       = ([string]$j.description)
+        Version           = ([string]$j.version)
+        Kind              = 'Module'
+        Path              = $d.FullName
+        Category          = 'Modules'
+        ModuleId          = ([string]$j.moduleId)
+        ModuleDir         = $d.FullName
+        EntryPath         = $entry
+        SupportedPlatforms= $sp
+        MinPowerShellVersion = $minPs
+        RequiresAdmin     = $false
       }
     }
   }
 
   return ($apps | Sort-Object Category, DisplayName)
 }
+
 
 
 function Read-47Theme {
@@ -940,6 +1138,272 @@ function Confirm-47Typed {
   } catch { return $false }
 }
 
+
+function Get-47ProjectRoot {
+  $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+  return (Split-Path -Parent $root)
+}
+
+function Compare-47FolderDiff {
+  param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Target)
+
+  $srcFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -ErrorAction SilentlyContinue
+  $tgtFiles = Get-ChildItem -LiteralPath $Target -Recurse -File -ErrorAction SilentlyContinue
+
+  $srcRel = @{}
+  foreach ($f in $srcFiles) { $srcRel[$f.FullName.Substring($Source.Length).TrimStart('\','/')] = $f }
+  $tgtRel = @{}
+  foreach ($f in $tgtFiles) { $tgtRel[$f.FullName.Substring($Target.Length).TrimStart('\','/')] = $f }
+
+  $added = @()
+  $changed = @()
+  $same = @()
+  foreach ($k in $srcRel.Keys) {
+    if (-not $tgtRel.ContainsKey($k)) { $added += @($k); continue }
+    try {
+      $sf = $srcRel[$k]; $tf = $tgtRel[$k]
+      if ($sf.Length -ne $tf.Length -or $sf.LastWriteTimeUtc -ne $tf.LastWriteTimeUtc) { $changed += @($k) } else { $same += @($k) }
+    } catch { $changed += @($k) }
+  }
+
+  $extra = @()
+  foreach ($k in $tgtRel.Keys) {
+    if (-not $srcRel.ContainsKey($k)) { $extra += @($k) }
+  }
+
+  return [pscustomobject]@{
+    Added = $added
+    Changed = $changed
+    Same = $same
+    ExtraInTarget = $extra
+  }
+}
+
+function Compare-47FolderSummary {
+  param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Target)
+  $srcFiles = Get-ChildItem -LiteralPath $Source -Recurse -File -ErrorAction SilentlyContinue
+  $tgtFiles = Get-ChildItem -LiteralPath $Target -Recurse -File -ErrorAction SilentlyContinue
+  $srcRel = @{}
+  foreach ($f in $srcFiles) { $srcRel[$f.FullName.Substring($Source.Length).TrimStart('\','/')] = $f }
+  $tgtRel = @{}
+  foreach ($f in $tgtFiles) { $tgtRel[$f.FullName.Substring($Target.Length).TrimStart('\','/')] = $f }
+
+  $new = 0; $changed = 0; $same = 0
+  foreach ($k in $srcRel.Keys) {
+    if (-not $tgtRel.ContainsKey($k)) { $new++ ; continue }
+    try {
+      $sf = $srcRel[$k]; $tf = $tgtRel[$k]
+      if ($sf.Length -ne $tf.Length -or $sf.LastWriteTimeUtc -ne $tf.LastWriteTimeUtc) { $changed++ } else { $same++ }
+    } catch { $changed++ }
+  }
+  return [pscustomobject]@{ New=$new; Changed=$changed; Same=$same; Source=$Source; Target=$Target }
+}
+
+function Apply-47StagedPack {
+  param([Parameter(Mandatory)][string]$StageDir)
+
+  $target = Get-47ProjectRoot
+  if (-not (Test-Path -LiteralPath $StageDir)) { throw "Stage folder not found." }
+
+  # Safe: copy only new/changed from stage to target, do not delete target files.
+  if ($IsWindows -and (Get-Command robocopy -ErrorAction SilentlyContinue)) {
+    & robocopy $StageDir $target /E /XO /XN /XC /R:1 /W:1 /NFL /NDL /NP /NJH /NJS | Out-Null
+  } else {
+    $files = Get-ChildItem -LiteralPath $StageDir -Recurse -File -ErrorAction SilentlyContinue
+    foreach ($f in $files) {
+      $rel = $f.FullName.Substring($StageDir.Length).TrimStart('\','/')
+      $dest = Join-Path $target $rel
+      $dir = Split-Path -Parent $dest
+      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+      Copy-Item -LiteralPath $f.FullName -Destination $dest -Force
+    }
+  }
+}
+
+
+function Get-47RecentPath {
+  try {
+    $paths = Get-47Paths
+    return (Join-Path $paths.DataRoot 'recent.json')
+  } catch {
+    $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+    return (Join-Path $root 'recent.json')
+  }
+}
+
+function Get-47Recent {
+  $p = Get-47RecentPath
+  if (Test-Path -LiteralPath $p) {
+    try {
+      $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+      if ($j -is [System.Array]) { return @($j) }
+    } catch { }
+  }
+  return @()
+}
+
+function Add-47Recent {
+  param([Parameter(Mandatory)][string]$Entry)
+  try {
+    $cur = @(Get-47Recent)
+    $cur = @($Entry) + @($cur | Where-Object { $_ -ne $Entry })
+    if ($cur.Count -gt 30) { $cur = $cur[0..29] }
+    $p = Get-47RecentPath
+    $dir = Split-Path -Parent $p
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    ($cur | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $p -Encoding utf8
+  } catch { }
+}
+
+function Get-47FuzzyScore {
+  param([Parameter(Mandatory)][string]$Text,[Parameter(Mandatory)][string]$Query)
+
+  $t = $Text.ToLowerInvariant()
+  $q = $Query.ToLowerInvariant().Trim()
+  if ([string]::IsNullOrWhiteSpace($q)) { return 0 }
+
+  $tokens = $q -split '\s+' | Where-Object { $_ }
+  $score = 0
+  foreach ($tok in $tokens) {
+    $idx = $t.IndexOf($tok)
+    if ($idx -lt 0) { return -9999 }
+    $score += (200 - [Math]::Min(200,$idx))
+    if ($idx -eq 0) { $score += 80 }
+  }
+
+  if ($t -like "*$q*") { $score += 60 }
+  return $score
+}
+
+function Get-47UiStatePath {
+  $paths = Get-47Paths
+  return (Join-Path $paths.DataRoot 'ui-state.json')
+}
+
+function Get-47SafeModePath {
+  $paths = Get-47Paths
+  return (Join-Path $paths.DataRoot 'safe-mode.json')
+}
+
+function Get-47UiState {
+  $p = Get-47UiStatePath
+  if (Test-Path -LiteralPath $p) {
+    try { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) } catch { }
+  }
+  return [pscustomobject]@{}
+}
+
+function Save-47UiState {
+  param([Parameter(Mandatory)]$State)
+  $p = Get-47UiStatePath
+  $dir = Split-Path -Parent $p
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  ($State | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $p -Encoding utf8
+}
+
+function Get-47SafeMode {
+  $p = Get-47SafeModePath
+  if (Test-Path -LiteralPath $p) {
+    try {
+      $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+      if ($j -and $j.enabled -ne $null) { return [bool]$j.enabled }
+    } catch { }
+  }
+  return $false
+}
+
+function Set-47SafeMode {
+  param([Parameter(Mandatory)][bool]$Enabled)
+  $p = Get-47SafeModePath
+  $dir = Split-Path -Parent $p
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  ([pscustomobject]@{ enabled = $Enabled; updated = (Get-Date) } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $p -Encoding utf8
+}
+
+function Export-47UserConfig {
+  param([Parameter(Mandatory)][string]$OutZip)
+  $paths = Get-47Paths
+  $root = $paths.DataRoot
+
+  $tmp = Join-Path $root ('_export_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+  $items = @(
+    'favorites.json',
+    'recent.json',
+    'ui-state.json',
+    'app-profiles.json',
+    'safe-mode.json'
+  )
+
+  foreach ($i in $items) {
+    $src = Join-Path $root $i
+    if (Test-Path -LiteralPath $src) {
+      Copy-Item -LiteralPath $src -Destination (Join-Path $tmp $i) -Force
+    }
+  }
+
+  $ms = Join-Path $root 'module-settings'
+  if (Test-Path -LiteralPath $ms) {
+    Copy-Item -LiteralPath $ms -Destination (Join-Path $tmp 'module-settings') -Recurse -Force
+  }
+
+  if (Test-Path -LiteralPath $OutZip) { Remove-Item -LiteralPath $OutZip -Force }
+  Compress-Archive -Path (Join-Path $tmp '*') -DestinationPath $OutZip -Force
+  Remove-Item -LiteralPath $tmp -Recurse -Force
+}
+
+function Import-47UserConfig {
+  param([Parameter(Mandatory)][string]$InZip)
+  $paths = Get-47Paths
+  $root = $paths.DataRoot
+
+  $tmp = Join-Path $root ('_import_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  Expand-Archive -LiteralPath $InZip -DestinationPath $tmp -Force
+
+  # Backup current config
+  $backup = Join-Path $root ('backup_config_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.zip')
+  try { Export-47UserConfig -OutZip $backup } catch { }
+
+  foreach ($f in (Get-ChildItem -LiteralPath $tmp -File -ErrorAction SilentlyContinue)) {
+    Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $root $f.Name) -Force
+  }
+  $ms = Join-Path $tmp 'module-settings'
+  if (Test-Path -LiteralPath $ms) {
+    $dst = Join-Path $root 'module-settings'
+    if (-not (Test-Path -LiteralPath $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
+    Copy-Item -LiteralPath (Join-Path $ms '*') -Destination $dst -Recurse -Force
+  }
+
+  Remove-Item -LiteralPath $tmp -Recurse -Force
+  return $backup
+}
+
+function Get-47PinnedCommandsPath {
+  $paths = Get-47Paths
+  return (Join-Path $paths.DataRoot 'pinned-commands.json')
+}
+
+function Get-47PinnedCommands {
+  $p = Get-47PinnedCommandsPath
+  if (Test-Path -LiteralPath $p) {
+    try {
+      $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+      if ($j -is [System.Array]) { return @($j) }
+    } catch { }
+  }
+  return @('Doctor','Verify','Support','Pack Manager')
+}
+
+function Save-47PinnedCommands {
+  param([Parameter(Mandatory)]$Pinned)
+  $p = Get-47PinnedCommandsPath
+  $dir = Split-Path -Parent $p
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  ($Pinned | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $p -Encoding utf8
+}
+
 function Show-47Gui {
   if (-not (Test-47GuiAvailable)) { Write-Warning "GUI not available on this platform/host. Falling back to CLI."; return $false }
   $scriptPath = $MyInvocation.MyCommand.Path
@@ -955,6 +1419,17 @@ function Show-47Gui {
   # Window
   $win = New-Object System.Windows.Window
   $win.Title = '47Project Framework'
+
+  # Load UI state (size/position/last page/filters)
+  $script:UiState = Get-47UiState
+  try {
+    if ($script:UiState.WindowWidth) { $win.Width = [double]$script:UiState.WindowWidth }
+    if ($script:UiState.WindowHeight) { $win.Height = [double]$script:UiState.WindowHeight }
+    if ($script:UiState.WindowLeft -ne $null) { $win.Left = [double]$script:UiState.WindowLeft }
+    if ($script:UiState.WindowTop -ne $null) { $win.Top = [double]$script:UiState.WindowTop }
+    if ($script:UiState.WindowState) { $win.WindowState = $script:UiState.WindowState }
+  } catch { }
+
   $win.Width = 1080
   $win.Height = 720
   $win.Background = $bg
@@ -1028,6 +1503,24 @@ function Show-47Gui {
   $hdrGrid.Children.Add($title) | Out-Null
   $hdrGrid.Children.Add($sub) | Out-Null
   $hdrGrid.Children.Add($btnRow) | Out-Null
+
+  # Safe Mode toggle (disables destructive actions)
+  $script:SafeMode = Get-47SafeMode
+  $safeBox = New-Object System.Windows.Controls.CheckBox
+  $safeBox.Content = 'Safe Mode'
+  $safeBox.Foreground = $fg
+  $safeBox.Margin = '12,2,0,0'
+  $safeBox.IsChecked = $script:SafeMode
+  $safeBox.ToolTip = 'When enabled: disables Apply/Restore/Update actions.'
+  $safeBox.Add_Click({
+    $script:SafeMode = [bool]$safeBox.IsChecked
+    Set-47SafeMode -Enabled $script:SafeMode
+    try { Update-47ActionGates } catch { }
+  })
+  [System.Windows.Controls.Grid]::SetColumn($safeBox,1)
+  [System.Windows.Controls.Grid]::SetRow($safeBox,0)
+  $hdrGrid.Children.Add($safeBox) | Out-Null
+
   $hdr.Child = $hdrGrid
 
   # Left nav
@@ -1106,10 +1599,38 @@ function Show-47Gui {
   $statusText.Text = 'Ready.'
   $status.Child = $statusText
 
+    function Get-47LogFilePath {
+    try {
+      $paths = Get-47Paths
+      $dir = Join-Path $paths.DataRoot 'logs'
+      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+      $fn = (Get-Date -Format 'yyyy-MM-dd') + '.log'
+      return (Join-Path $dir $fn)
+    } catch {
+      return $null
+    }
+  }
+
   function GuiLog([string]$line,[string]$level='INFO') {
     $ts = Get-Date -Format 'HH:mm:ss'
-    $consoleBox.AppendText("[$ts][$level] $line`r`n")
+    $msg = ("[{0}][{1}] {2}" -f $ts, $level, $line)
+    $consoleBox.AppendText($msg + "`r`n")
     $consoleBox.ScrollToEnd()
+
+    try {
+      $lp = Get-47LogFilePath
+      if ($lp) { Add-Content -LiteralPath $lp -Value $msg -Encoding utf8 }
+    } catch { }
+  }
+
+  function Open-47LatestLog {
+    try {
+      $paths = Get-47Paths
+      $dir = Join-Path $paths.DataRoot 'logs'
+      if (-not (Test-Path -LiteralPath $dir)) { return }
+      $f = Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($f) { Start-Process $f.FullName | Out-Null }
+    } catch { }
   }
 
   function GuiRun([string]$label,[scriptblock]$op) {
@@ -1212,6 +1733,21 @@ function Show-47Gui {
 
 }
 
+  # Gate destructive actions when Safe Mode is enabled
+  function Update-47ActionGates {
+    try {
+      $isSafe = [bool]$script:SafeMode
+      # known buttons we store in script scope if present
+      foreach ($b in @('BtnApplyPlan','BtnRestoreSnap','BtnApplyStaged')) {
+        try {
+          $obj = Get-Variable -Name $b -Scope Script -ErrorAction SilentlyContinue
+          if ($obj -and $obj.Value) { $obj.Value.IsEnabled = (-not $isSafe) }
+        } catch { }
+      }
+    } catch { }
+  }
+
+
   function New-47Card([string]$titleText,[string]$descText,[scriptblock]$bodyBuilder) {
     $card = New-Object System.Windows.Controls.Border
     $card.Background = $panel
@@ -1259,6 +1795,44 @@ function Show-47Gui {
 
   $pages['Home'] = {
     $root = New-Object System.Windows.Controls.StackPanel
+
+    # Startup health gate (warnings)
+    $root.Children.Add((New-47Card 'Startup Health' 'Quick warnings and one-click tools.' {
+      $sp = New-Object System.Windows.Controls.StackPanel
+      $st = Get-47HostStatus
+      $warn = @()
+
+      if (-not $st.WpfAvailable) { $warn += 'WPF not available - GUI will fail.' }
+      if ($st.IsWindows -and (-not $st.IsAdmin)) { $warn += 'Not running as Admin (some actions need elevation).' }
+      $pol = $null
+      try { $pol = Get-47EffectivePolicy } catch { }
+      if ($pol -and $pol.Mode -and ($pol.Mode -ne 'Permissive')) { $warn += ('Policy mode: ' + $pol.Mode) }
+
+      if ($warn.Count -eq 0) {
+        $t = New-Object System.Windows.Controls.TextBlock
+        $t.Text = 'All checks look good.'
+        $t.Foreground = $muted
+        $sp.Children.Add($t) | Out-Null
+      } else {
+        foreach ($w in $warn) {
+          $t = New-Object System.Windows.Controls.TextBlock
+          $t.Text = ' ' + $w
+          $t.Foreground = $fg
+          $t.Margin = '0,2,0,2'
+          $sp.Children.Add($t) | Out-Null
+        }
+
+        $btns = New-Object System.Windows.Controls.WrapPanel
+        $btns.Margin = '0,10,0,0'
+        $btns.Children.Add((New-47Button 'Run Doctor' { $nav.SelectedItem = 'Doctor' })) | Out-Null
+        $btns.Children.Add((New-47Button 'Verify' { $nav.SelectedItem = 'Verify' })) | Out-Null
+        $btns.Children.Add((New-47Button 'Policy' { $nav.SelectedItem = 'Trust' })) | Out-Null
+        $sp.Children.Add($btns) | Out-Null
+      }
+
+      return $sp
+    })) | Out-Null
+
     $root.Children.Add((New-47Card 'Dashboard' 'All core features in one place.' {
       $row = New-Object System.Windows.Controls.WrapPanel
       $row.Margin = '0,6,0,0'
@@ -1301,6 +1875,7 @@ $row.Children.Add((New-47Button 'Apps' { $nav.SelectedItem = 'Apps' })) | Out-Nu
       AddLine 'WPF' ([string]$st.WpfAvailable)
       AddLine 'Docker' ([string]$st.Docker)
       AddLine 'Winget' ([string]$st.Winget)
+      AddLine 'Safe Mode' ([string](Get-47SafeMode))
 
       if ($st.LastSnapshot) {
         AddLine 'Last Snapshot' ($st.LastSnapshot.Name + ' @ ' + [string]$st.LastSnapshot.Created)
@@ -1397,6 +1972,7 @@ $pages['Plans'] = {
       })) | Out-Null
 
       $btns.Children.Add((New-47Button 'Apply' {
+        if ($script:SafeMode) { throw 'Safe Mode is enabled.' }
         Start-47Task 'Apply plan' {
           $p = $planPathBox.Text
           if ([string]::IsNullOrWhiteSpace($p)) { throw 'Select a plan file.' }
@@ -1477,6 +2053,23 @@ $pages['Plans'] = {
   
   $pages['Settings'] = {
     $root = New-Object System.Windows.Controls.StackPanel
+
+    $root.Children.Add((New-47Card 'Safe Mode (global)' 'Disable destructive actions for demos and safety.' {
+      $sp = New-Object System.Windows.Controls.StackPanel
+      $cb = New-Object System.Windows.Controls.CheckBox
+      $cb.Content = 'Enable Safe Mode'
+      $cb.Foreground = $fg
+      $cb.IsChecked = (Get-47SafeMode)
+      $cb.Add_Click({
+        $script:SafeMode = [bool]$cb.IsChecked
+        Set-47SafeMode -Enabled $script:SafeMode
+        try { Update-47ActionGates } catch { }
+        Show-47GuiMessage ('Safe Mode: ' + $script:SafeMode)
+      })
+      $sp.Children.Add($cb) | Out-Null
+      return $sp
+    })) | Out-Null
+
 
     $mods = @(Get-47Modules)
     $pick = New-Object System.Windows.Controls.ComboBox
@@ -1624,6 +2217,99 @@ $pages['Trust'] = {
         New-Item -ItemType Directory -Path $stage -Force | Out-Null
         Start-47Task 'Stage pack' { P47-SafeExtractBundle -ZipPath $zip -Destination $stage } | Out-Null
         Show-47GuiMessage ("Staging folder: " + $stage)
+
+      $btns.Children.Add((New-47Button 'Diff Staged vs Project' {
+        $stage = Get-47FolderPicker
+        if (-not $stage) { return }
+        $target = Get-47ProjectRoot
+        $d = Compare-47FolderDiff -Source $stage -Target $target
+
+        $dlg = New-Object System.Windows.Window
+        $dlg.Title = 'Staged Diff'
+        $dlg.Width = 820
+        $dlg.Height = 520
+        $dlg.WindowStartupLocation = 'CenterOwner'
+        $dlg.Owner = $win
+        $dlg.Background = $bg
+
+        $sp = New-Object System.Windows.Controls.StackPanel
+        $sp.Margin = '12'
+
+        $hdr = New-Object System.Windows.Controls.TextBlock
+        $hdr.Text = ("Added: {0}  Changed: {1}  Same: {2}  ExtraInTarget: {3}" -f $d.Added.Count,$d.Changed.Count,$d.Same.Count,$d.ExtraInTarget.Count)
+        $hdr.Foreground = $fg
+        $hdr.Margin = '0,0,0,10'
+
+        $tabs = New-Object System.Windows.Controls.TabControl
+        $tabs.Background = $panel
+        $tabs.BorderBrush = $accent
+        $tabs.BorderThickness = '1'
+
+        function NewTab([string]$name,[string[]]$items) {
+          $tab = New-Object System.Windows.Controls.TabItem
+          $tab.Header = $name
+          $list = New-Object System.Windows.Controls.ListBox
+          $list.Background = $panel
+          $list.Foreground = $fg
+          $list.BorderBrush = $accent
+          $list.BorderThickness = '1'
+          $list.Height = 360
+          foreach ($i in $items) { [void]$list.Items.Add($i) }
+          $tab.Content = $list
+          return $tab
+        }
+
+        $tabs.Items.Add((NewTab 'Added' $d.Added)) | Out-Null
+        $tabs.Items.Add((NewTab 'Changed' $d.Changed)) | Out-Null
+        $tabs.Items.Add((NewTab 'ExtraInTarget' $d.ExtraInTarget)) | Out-Null
+
+        $btns2 = New-Object System.Windows.Controls.WrapPanel
+        $btns2.Margin = '0,10,0,0'
+
+        $btns2.Children.Add((New-47Button 'Export Diff' {
+          $out = Get-47SaveFile -Title 'Save diff report' -Filter 'Text (*.txt)|*.txt|All files (*.*)|*.*' -DefaultName ("diff_{0}.txt" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+          if ($out) {
+            $lines = @()
+            $lines += ('Stage: ' + $stage)
+            $lines += ('Target: ' + $target)
+            $lines += ''
+            $lines += '== Added =='
+            $lines += $d.Added
+            $lines += ''
+            $lines += '== Changed =='
+            $lines += $d.Changed
+            $lines += ''
+            $lines += '== ExtraInTarget =='
+            $lines += $d.ExtraInTarget
+            Set-Content -LiteralPath $out -Value ($lines -join "`r`n") -Encoding utf8
+            Show-47GuiMessage ('Saved: ' + $out)
+          }
+        })) | Out-Null
+
+        $sp.Children.Add($hdr) | Out-Null
+        $sp.Children.Add($tabs) | Out-Null
+        $sp.Children.Add($btns2) | Out-Null
+
+        $dlg.Content = $sp
+        $dlg.ShowDialog() | Out-Null
+      })) | Out-Null
+
+
+      $btns.Children.Add(($script:BtnApplyStaged = New-47Button 'Apply Staged Pack' {
+        $stage = Get-47FolderPicker
+        if (-not $stage) { return }
+        $target = Get-47ProjectRoot
+        $sum = Compare-47FolderSummary -Source $stage -Target $target
+        $msg = ("Stage: {0}`nTarget: {1}`nNew: {2}  Changed: {3}  Same: {4}`n`nCreate a snapshot first, then apply staged files? (no deletes)" -f $sum.Source,$sum.Target,$sum.New,$sum.Changed,$sum.Same)
+        if (-not (Confirm-47Typed -Title 'Confirm Update' -Prompt $msg -Token 'UPDATE')) { return }
+
+        if ($script:SafeMode) { throw 'Safe Mode is enabled.' }
+        Start-47Task 'Snapshot + Apply staged pack' {
+          try { Save-47Snapshot -Name ('pre_update_' + (Get-Date -Format 'yyyyMMdd_HHmmss')) | Out-Null } catch { }
+          Apply-47StagedPack -StageDir $stage
+        } | Out-Null
+      })) | Out-Null
+
       })) | Out-Null
 
       $btns.Children.Add((New-47Button 'Open Data Folder' {
@@ -1633,7 +2319,123 @@ $pages['Trust'] = {
       $sp.Children.Add($btns) | Out-Null
 
       $note = New-Object System.Windows.Controls.TextBlock
-      $note.Text = "Tip: staging extracts into data/ and does NOT overwrite your project. Use snapshots + manual merge for now."
+      $note.Text = "Tip: staging extracts into data/ and does NOT overwrite your project.
+Use Apply Staged Pack to copy staged files into the project (no deletes)."
+      $note.Foreground = $muted
+      $note.Margin = '0,10,0,0'
+      $note.TextWrapping = 'Wrap'
+      $sp.Children.Add($note) | Out-Null
+
+      return $sp
+    })) | Out-Null
+
+    return $root
+  }
+
+
+  $pages['Verify'] = {
+    $root = New-Object System.Windows.Controls.StackPanel
+
+    $reportBox = New-Object System.Windows.Controls.TextBox
+    $reportBox.Height = 360
+    $reportBox.AcceptsReturn = $true
+    $reportBox.VerticalScrollBarVisibility = 'Auto'
+    $reportBox.Background = $panel
+    $reportBox.Foreground = $fg
+    $reportBox.BorderBrush = $accent
+    $reportBox.BorderThickness = '1'
+    $reportBox.Text = ''
+
+    function Run-Verify {
+      $lines = @()
+      $lines += ('Timestamp: ' + (Get-Date))
+      try {
+        $st = Get-47HostStatus
+        $lines += ('PowerShell: ' + $st.PwshVersion)
+        $lines += ('Windows: ' + $st.IsWindows + '  Admin: ' + $st.IsAdmin + '  WPF: ' + $st.WpfAvailable)
+        $lines += ('Docker: ' + $st.Docker + '  Winget: ' + $st.Winget)
+      } catch { $lines += 'Status: error' }
+
+      try {
+        $mods = @(Get-47Modules)
+        $lines += ('Modules discovered: ' + $mods.Count)
+      } catch { $lines += 'Modules discovered: error' }
+
+      try {
+        $pol = Get-47EffectivePolicy
+        $lines += ('Policy mode: ' + $pol.Mode)
+      } catch { $lines += 'Policy: error' }
+
+      try {
+        $sn = @(Get-47Snapshots)
+        $lines += ('Snapshots: ' + $sn.Count)
+      } catch { $lines += 'Snapshots: error' }
+
+      $lines += ''
+      $lines += 'OK - Verify done.'
+      $reportBox.Text = ($lines -join "`r`n")
+    }
+
+    $root.Children.Add((New-47Card 'Verify Everything' 'Run a quick integrity/readiness check and export a report.' {
+      $sp = New-Object System.Windows.Controls.StackPanel
+
+      $btns = New-Object System.Windows.Controls.WrapPanel
+      $btns.Margin = '0,6,0,0'
+
+      $btns.Children.Add((New-47Button 'Run Verify' { Start-47Task 'Verify' { } | Out-Null; $win.Dispatcher.Invoke([action]{ Run-Verify }) })) | Out-Null
+
+      $btns.Children.Add((New-47Button 'Export Report' {
+        $out = Get-47SaveFile -Title 'Save verify report' -Filter 'Text (*.txt)|*.txt|All files (*.*)|*.*' -DefaultName ("verify_{0}.txt" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        if ($out) { Set-Content -LiteralPath $out -Value $reportBox.Text -Encoding utf8; Show-47GuiMessage ("Saved: " + $out) }
+      })) | Out-Null
+
+      $btns.Children.Add((New-47Button 'Open Latest Log' { Open-47LatestLog })) | Out-Null
+
+      $sp.Children.Add($btns) | Out-Null
+      $sp.Children.Add($reportBox) | Out-Null
+      Run-Verify
+      return $sp
+    })) | Out-Null
+
+    return $root
+  }
+
+
+  $pages['Config'] = {
+    $root = New-Object System.Windows.Controls.StackPanel
+
+    $root.Children.Add((New-47Card 'Config Export/Import' 'Export/import your user configuration (favorites, recents, UI state, profiles, module settings).' {
+      $sp = New-Object System.Windows.Controls.StackPanel
+
+      $btns = New-Object System.Windows.Controls.WrapPanel
+      $btns.Margin = '0,6,0,0'
+
+      $btns.Children.Add((New-47Button 'Export Config' {
+        $out = Get-47SaveFile -Title 'Save config zip' -Filter 'ZIP (*.zip)|*.zip|All files (*.*)|*.*' -DefaultName ("47_config_{0}.zip" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        if (-not $out) { return }
+        Start-47Task 'Export config' { Export-47UserConfig -OutZip $out } | Out-Null
+        Show-47GuiMessage ('Saved: ' + $out)
+      })) | Out-Null
+
+      $btns.Children.Add((New-47Button 'Import Config' {
+        $zip = Get-47OpenFile -Title 'Select config zip' -Filter 'ZIP (*.zip)|*.zip|All files (*.*)|*.*'
+        if (-not $zip) { return }
+        if (-not (Confirm-47Typed -Title 'Confirm Import' -Prompt 'This will overwrite your current config files. A backup zip will be created.' -Token 'IMPORT')) { return }
+        Start-47Task 'Import config' {
+          $backup = Import-47UserConfig -InZip $zip
+          if ($backup) { $backup }
+        } | Out-Null
+        Show-47GuiMessage 'Imported config. Restart recommended.'
+      })) | Out-Null
+
+      $btns.Children.Add((New-47Button 'Open Data Folder' {
+        try { $paths = Get-47Paths; Start-Process $paths.DataRoot | Out-Null } catch { }
+      })) | Out-Null
+
+      $sp.Children.Add($btns) | Out-Null
+
+      $note = New-Object System.Windows.Controls.TextBlock
+      $note.Text = "Import creates a backup zip under data/. Token required: IMPORT."
       $note.Foreground = $muted
       $note.Margin = '0,10,0,0'
       $note.TextWrapping = 'Wrap'
@@ -1759,7 +2561,8 @@ $pages['Apps'] = {
     $filters = New-Object System.Windows.Controls.WrapPanel
     $filters.Margin = '0,0,0,10'
 
-    $search = New-Object System.Windows.Controls.TextBox
+    $script:AppsSearch = New-Object System.Windows.Controls.TextBox
+    $search = $script:AppsSearch
     $search.MinWidth = 420
     $search.Background = $panel
     $search.Foreground = $fg
@@ -1768,7 +2571,8 @@ $pages['Apps'] = {
     $search.Margin = '0,0,12,0'
     $search.Text = ''
 
-    $category = New-Object System.Windows.Controls.ComboBox
+    $script:AppsCategory = New-Object System.Windows.Controls.ComboBox
+    $category = $script:AppsCategory
     $category.MinWidth = 200
     $category.Background = $panel
     $category.Foreground = $fg
@@ -1778,7 +2582,18 @@ $pages['Apps'] = {
     foreach ($c in @('All','Framework','Tools','Modules','AppCrawler','Launcher','Apps')) { [void]$category.Items.Add($c) }
     $category.SelectedIndex = 0
 
-    $onlyFav = New-Object System.Windows.Controls.CheckBox
+    try {
+      if ($script:UiState.AppsSearch) { $search.Text = [string]$script:UiState.AppsSearch }
+      if ($script:UiState.AppsCategory) {
+        $ci = $category.Items.IndexOf([string]$script:UiState.AppsCategory)
+        if ($ci -ge 0) { $category.SelectedIndex = $ci }
+      }
+      if ($script:UiState.AppsFavOnly -ne $null) { $onlyFav.IsChecked = [bool]$script:UiState.AppsFavOnly }
+    } catch { }
+
+
+    $script:AppsFavOnly = New-Object System.Windows.Controls.CheckBox
+    $onlyFav = $script:AppsFavOnly
     $onlyFav.Content = 'Favorites only'
     $onlyFav.Foreground = $fg
     $onlyFav.Margin = '0,6,0,0'
@@ -1915,6 +2730,16 @@ $pages['Apps'] = {
 
     $btnCopy = New-Object System.Windows.Controls.Button
     $btnCopy.Content = 'Copy Path'
+
+    $btnCopyCli = New-Object System.Windows.Controls.Button
+    $btnCopyCli.Content = 'Copy CLI'
+    $btnCopyCli.Padding = '10,6,10,6'
+    $btnCopyCli.Background = $panel
+    $btnCopyCli.Foreground = $fg
+    $btnCopyCli.BorderBrush = $accent
+    $btnCopyCli.BorderThickness = '1'
+    $btnCopyCli.Margin = '0,0,10,10'
+    $btnCopyCli.IsEnabled = $false
     $btnCopy.Padding = '10,6,10,6'
     $btnCopy.Background = $panel
     $btnCopy.Foreground = $fg
@@ -1928,6 +2753,7 @@ $pages['Apps'] = {
     $btnRow.Children.Add($btnFolder) | Out-Null
     $btnRow.Children.Add($btnFav) | Out-Null
     $btnRow.Children.Add($btnCopy) | Out-Null
+    $btnRow.Children.Add($btnCopyCli) | Out-Null
 
     $rightStack.Children.Add($detailsTitle) | Out-Null
     $rightStack.Children.Add($detailsMeta) | Out-Null
@@ -1989,6 +2815,7 @@ $pages['Apps'] = {
       $btnLaunch.IsEnabled = $true
       $btnFolder.IsEnabled = $true
       $btnCopy.IsEnabled = $true
+      $btnCopyCli.IsEnabled = $true
 
       $isScript = ($a.Type -ne 'module')
       $detailsArgs.IsEnabled = $isScript
@@ -2109,6 +2936,22 @@ $pages['Apps'] = {
         Set-SelectedApp $a
       })
 
+    $btnCopyCli.Add_Click({
+      try {
+        $a = $script:SelectedApp
+        if (-not $a) { return }
+        if ($a.Type -eq 'module') {
+          [System.Windows.Clipboard]::SetText(("pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Command import-module -ModuleId " + $a.ModuleId))
+        } else {
+          $args = $detailsArgs.Text
+          $cmd = "pwsh -NoLogo -NoProfile -File `"{0}`"" -f $a.Path
+          if (-not [string]::IsNullOrWhiteSpace($args)) { $cmd = $cmd + " " + $args }
+          [System.Windows.Clipboard]::SetText($cmd)
+        }
+      } catch { }
+    })
+
+
       return $tile
     }
 
@@ -2161,8 +3004,16 @@ $pages['Apps'] = {
     return $root
   }
 
-foreach ($k in @('Home','Status','Plans','Modules','Settings','Trust','Bundles','Pack Manager','Snapshots','Support','Doctor','Apps','Tasks')) { [void]$nav.Items.Add($k) }
+foreach ($k in @('Home','Status','Plans','Modules','Settings','Trust','Bundles','Pack Manager','Verify','Config','Snapshots','Support','Doctor','Apps','Tasks')) { [void]$nav.Items.Add($k) }
   $nav.SelectedIndex = 0
+
+
+  try {
+    if ($script:UiState.LastPage) {
+      $i = $nav.Items.IndexOf([string]$script:UiState.LastPage)
+      if ($i -ge 0) { $nav.SelectedIndex = $i } else { $nav.SelectedIndex = 0 }
+    } else { $nav.SelectedIndex = 0 }
+  } catch { $nav.SelectedIndex = 0 }
 
   $nav.Add_SelectionChanged({
     try {
@@ -2171,7 +3022,34 @@ foreach ($k in @('Home','Status','Plans','Modules','Settings','Trust','Bundles',
       $statusText.Text = $key
       $contentHost.Content = & $pages[$key]
       $statusText.Text = 'Ready.'
-    } catch { Show-47GuiMessage $_.Exception.Message }
+    } catch { Show-47Gu
+  $win.Add_Closing({
+    try {
+      $st = [pscustomobject]@{
+        WindowWidth = $win.Width
+        WindowHeight = $win.Height
+        WindowLeft = $win.Left
+        WindowTop = $win.Top
+        WindowState = [string]$win.WindowState
+        LastPage = [string]$nav.SelectedItem
+        AppsSearch = ''
+        AppsCategory = ''
+        AppsFavOnly = $false
+      }
+
+      # capture Apps page filter controls if present
+      try {
+        if ($script:AppsSearch) { $st.AppsSearch = [string]$script:AppsSearch.Text }
+        if ($script:AppsCategory) { $st.AppsCategory = [string]$script:AppsCategory.SelectedItem }
+        if ($script:AppsFavOnly) { $st.AppsFavOnly = [bool]$script:AppsFavOnly.IsChecked }
+      } catch { }
+
+      Save-47UiState -State $st
+    } catch { }
+  })
+
+
+iMessage $_.Exception.Message }
   })
 
   $grid.Children.Add($hdr) | Out-Null
@@ -2181,7 +3059,21 @@ foreach ($k in @('Home','Status','Plans','Modules','Settings','Trust','Bundles',
   $win.Content = $grid
 
   GuiLog "GUI started." 'INFO'
-  $win.ShowDialog() | Out-Null
+  
+  # Hotkeys
+  $win.Add_KeyDown({
+    param($sender,$e)
+    try {
+      if (($e.Key -eq [System.Windows.Input.Key]::K) -and ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control)) {
+        $e.Handled = $true
+        Show-47CommandPalette
+      }
+    } catch { }
+  })
+
+  try { Update-47ActionGates } catch { }
+
+$win.ShowDialog() | Out-Null
   return $true
 }
 #endregion

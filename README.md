@@ -1,175 +1,120 @@
-# 47Project Framework (Nexus Shell)
+# 47Project Framework
 
-**Windows-first** framework with a **PowerShell 7+** Nexus shell, module system, plan runner, Trust Center, snapshots, support bundle tooling, and an AppCrawler bridge.
+A Windows-first (PowerShell 7+) **Nexus shell** that unifies the Project47 toolset into one place:
+- GUI hub with Apps/Modules/Plans/Snapshots/Pack Manager
+- CLI shell for non-GUI environments
+- Safe update workflows (stage → diff → apply) + snapshots + policy controls
 
-This repo is designed so you can:
-- run a guided interactive shell (menu UI in PowerShell)
-- run single commands non-interactively (CI / scripting) with `-Command`
-- output machine-readable JSON with `-Json`
-
----
-
-## What’s included (current)
-
-### Nexus shell
-- StrictMode + stable bootstrap flow (core module import + first-run wizard)
-- Rationalized menu driven by a **command registry** (easy to extend)
-- Hardened prompt input helpers + confirmations for destructive actions
-- `-Help`, `-Menu`, `-Command`, and `-Json` modes
-
-### Plans
-- Plan validation + hashing
-- Plan run modes:
-  - `WhatIf` (dry run)
-  - `Apply` (exec)
-- Rollback helpers (best-effort):
-  - optional System Restore Point creation (Windows/admin dependent)
-  - undo-on-failure hooks per step (reverse order)
-
-### Trust Center + bundles
-- Authenticode checks (optional policy enforcement)
-- Module fingerprint allowlisting hooks
-- Offline bundle verification using `bundle.manifest.json`
-- Safe extraction (ZipSlip protection + post-extract hash verification + quarantine on mismatch)
-
-### Snapshots + support
-- Inventory snapshots + diff
-- Snapshot lifecycle (save/list/restore)
-- Support bundle export (logs/settings/policy/inventory)
-
-### Modules
-- `modules/<module>/module.json` discovery
-- module actions -> callable from plans and/or shell commands
-- module settings UI generator
-- module scaffold tool to create new modules quickly
-
-### AppCrawler
-- Optional bridge to launch AppCrawler and capture best-effort inventory snapshot.
-
----
-
-## Requirements
-
-### Recommended
-- **PowerShell 7+** (`pwsh`) for cross-platform execution
-- Windows is required for WPF UI pages and some Windows-only capabilities (registry/service/etc).
-
-### Optional
-- Docker (for containerized testing flows)
-- Winget (Windows) for winget-based install actions
-
----
+> Current bundle: **v20** (2025-12-26)
 
 ## Quick start
 
-### Windows
+### Windows (recommended)
+1) Double-click: `Run_47Project_Framework.cmd`  
+   - launches the framework  
+   - installs PowerShell 7 via winget if missing (when available)
+
+Optional shortcuts:
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1
+.\tools\install_windows.ps1
 ```
 
-### Linux (Ubuntu/Debian)
-Install prerequisites (PowerShell + Docker):
+### Linux / macOS
+Install PowerShell 7+, then:
 ```bash
-sudo bash tools/install_dependencies.sh
-pwsh --version
-docker --version
+pwsh -NoLogo -NoProfile -File Framework/47Project.Framework.ps1
 ```
 
-Run:
-```bash
-pwsh -NoLogo -NoProfile -File ./Framework/47Project.Framework.ps1
-```
+## Main entry points
+- GUI: `47Project.Framework.GUI.v13.ps1`
+- CLI: `Framework/47Project.Framework.ps1`
+- Smart launcher: `47Project.Framework.Launch.ps1`
 
----
+## Highlights
 
+### Apps Hub (GUI)
+- Discovers **scripts** + **modules**
+- Reads metadata from comment-based help and `modules/*/module.json`
+- Favorites are pinned; details panel includes Copy Path / Copy CLI
 
+### Command Palette (Ctrl+K)
+- Fuzzy search pages/apps
+- Shows **Pinned** + **Recent** when empty
+- Pinned pages stored in `data/pinned-commands.json`
 
-## GUI (Windows)
-If WPF is available, Nexus auto-launches the **47Project Framework** GUI. You can force/disable it:
+### Safe Mode
+- Global toggle that disables destructive actions
+- Stored in `data/safe-mode.json`
+
+### Pack Manager
+- Stage pack zip (safe extract)
+- Diff staged vs project
+- Apply staged pack (**typed confirmation: UPDATE**)  
+  *(apply is copy-only: no deletes)*
+
+### Snapshots
+Create/restore safety checkpoints before risky changes.
+
+### Verify + Doctor
+- Verify page exports a readiness report
+- Doctor runs diagnostics and helps identify missing prerequisites
+
+## Data & logs
+- Data folder: `data/`
+- Logs: `data/logs/YYYY-MM-DD.log`
+- UI state: `data/ui-state.json`
+
+## Documentation
+Start here: `docs/INDEX.md`
+
+## Release integrity
+- `dist_manifest.json` contains SHA256 hashes for all files in the pack.
+
+## License
+Internal / project license as defined by the repository (add if/when you publish).
+
+## Versioning
+- `version.json` is the single source of truth for pack version/date.
+- `tools/bump_version.ps1` updates version.json and regenerates dist_manifest.json.
+
+## Integrity
+Verify the pack against the manifest:
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Gui
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -NoGui
+.\tools\verify_manifest.ps1
 ```
 
-## CLI / Non-interactive usage
+## Contributing
+See `CONTRIBUTING.md`.
 
-### Print menu
+## Releases
+- Run the release pipeline:
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Menu
+.\tools\release.ps1 -Version vXX -Notes "summary"
 ```
+- Checklist: `docs/RELEASE_CHECKLIST.md`
 
-### Print menu as JSON (CI-friendly)
+## Maintenance
+Smoke test:
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Menu -Json
+.\tools\smoke_test.ps1
 ```
-
-### Run a single command (non-interactive)
+Safe fixes:
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Command 4 -PlanPath .\examples\plans\sample_install.plan.json -Json
+.\tools\fix_common_issues.ps1 -ResetDataJson -RegenerateManifest
 ```
+Privacy: `PRIVACY.md`
 
-> **Safety**: destructive actions invoked with `-Command` require `-Force` (e.g., Apply plan / restore snapshot).
+## Support
+In the GUI: About -> **Copy Support Info** copies environment details to clipboard.
 
----
-
-## Folder layout (high level)
-- `Framework/` — Nexus shell entry
-- `Framework/Core/` — core module (imports tools, policies, helpers)
-- `modules/` — modules (each has `module.json`)
-- `policy/` — trust/policy JSON
-- `schemas/` — capability catalog, schemas
-- `examples/` — sample plans and bundle templates
-- `tools/` — helper scripts (install deps, build docs, doctor, etc.)
-- `data/` — runtime logs, snapshots, cache, quarantine (created on first run)
-
----
-
-## Help
+## Offline HTML docs
 ```powershell
-pwsh -NoLogo -NoProfile -File .\Framework\47Project.Framework.ps1 -Help
+.\tools\build_docs.ps1
 ```
+Open: `docs/site/index.html`
 
-See `docs/QuickStart.md` for more details.
+## Module Wizard (GUI)
+Use the Module Wizard page to generate module scaffolding.
 
-
-## Apps Hub (GUI)
-The GUI includes an **Apps Hub** page that discovers other scripts in the pack and launches them as tiles.
-
-## Theme (GUI)
-You can override GUI colors by creating:
-- `data/theme.json`
-
-Example:
-```json
-{
-  "Background": "#0F1115",
-  "Panel": "#141824",
-  "Foreground": "#E6EAF2",
-  "Muted": "#9AA4B2",
-  "Accent": "#00FF7B",
-  "Warning": "#FFB020"
-}
-```
-
-
-## Apps Hub (GUI) - Extras
-- Tiles with optional icons from `assets/icons/<scriptBaseName>.png`
-- Categories and search filter
-- Favorites stored in `data/favorites.json`
-- Optional arguments per app tile
-- Run as Admin (Windows only) + Open Folder
-
-## GUI Ultimate Additions
-- Quick Actions (Doctor / Support / Pack / Tasks) in the top bar
-- Status page (admin/WPF/docker/winget/readiness)
-- Pack Manager (verify + stage packs safely)
-- Background task runner page (non-blocking)
-- Safety confirmations for Apply/Restore (typed tokens)
-- Apps Hub tiles: search/category/favorites, optional args, run as admin, icons in assets/icons/
-- Theme override: data/theme.json
-
-## Apps Hub metadata
-Apps Hub reads module metadata from modules/*/module.json and script metadata from comment-based help (.SYNOPSIS/.DESCRIPTION) plus optional '# Version: x.y.z'.
-
-## Apps Hub UI
-Apps Hub now has a pinned Favorites strip and a right-side Details panel (click a tile).
+## Offline update notifier
+Drop pack zip files into `pack_updates/` to show a Local Updates banner.
